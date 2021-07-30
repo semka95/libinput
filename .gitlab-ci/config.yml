@@ -3,7 +3,7 @@
 #
 
 # We're happy to rebuild all containers when one changes.
-.default_tag: &default_tag '2021-07-28.1'
+.default_tag: &default_tag '2021-07-30.1'
 
 distributions:
   - name: fedora
@@ -35,6 +35,7 @@ distributions:
       - mtdev-devel
       - diffutils
       - valgrind        # for the valgrind run, optional
+      - systemd-udev    # for the qemu run, optional
   - name: debian
     tag: *default_tag
     versions:
