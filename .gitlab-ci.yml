@@ -403,6 +403,7 @@ freebsd:13.0@container-clean:
     - kvm
   variables:
     MESON_BUILDDIR: build_dir
+    MESON_START_UDEVD: 1
     FDO_B2C_KERNEL: https://gitlab.freedesktop.org/api/v4/projects/1831/packages/generic/kernel-x86_64/v5.13/bzImage
     FDO_B2C_COMMAND: .gitlab-ci/meson-build.sh
   script:

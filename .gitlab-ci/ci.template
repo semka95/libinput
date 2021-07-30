@@ -265,6 +265,7 @@ check-commit:
     - kvm
   variables:
     MESON_BUILDDIR: build_dir
+    MESON_START_UDEVD: 1
     FDO_B2C_KERNEL: {{ b2c.kernel }}
     FDO_B2C_COMMAND: .gitlab-ci/meson-build.sh
   script:
