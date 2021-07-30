@@ -46,6 +46,7 @@ fi
 if [[ -n "$MESON_START_UDEVD" ]]; then
     echo "Starting systemd-udevd in the background"
     /lib/systemd/systemd-udevd &
+	sleep 30
 fi
 
 # we still want to generate the reports, even if meson test fails
