@@ -34,7 +34,7 @@
 # <distribution>:<version>@activity:
 #  e.g. fedora:31@build-default
 
-.templates_sha: &template_sha 007f3e2fe2235328e77d3cd4ce007ab41cd9ce6c
+.templates_sha: &template_sha a89ffff18aa8df43000f8631f31a2b734a0c66cb
 
 include:
   - project: 'freedesktop/ci-templates'
@@ -94,7 +94,6 @@ variables:
   ARCH_TAG:    '2021-07-28.1'
   ALPINE_TAG:  '2021-07-28.1'
   FREEBSD_TAG: '2021-07-28.1'
-  FEDORA_QEMU_TAG:     'fedora-qemu-vm-2021-07-28.1'
 
   FDO_UPSTREAM_REPO: libinput/libinput
 
@@ -174,20 +173,6 @@ check-commit:
 # Note: images are rebuilt weekly with a scheduled pipeline with FDO_FORCE_REBUILD set
 #
 #
-fedora:34@qemu-prep:
-  extends:
-    - .fdo.qemu-build@fedora
-    - .policy
-  stage: prep
-  tags:
-    - kvm
-  variables:
-    GIT_STRATEGY: none
-    FDO_DISTRIBUTION_VERSION: "34"
-    FDO_DISTRIBUTION_TAG: $FEDORA_QEMU_TAG
-    FDO_DISTRIBUTION_PACKAGES: $FEDORA_PACKAGES
-
-
 fedora:33@container-prep:
   extends:
     - .fdo.container-build@fedora
@@ -399,6 +384,32 @@ freebsd:13.0@container-clean:
     - .gitlab-ci/meson-build.sh
   dependencies: []
 
+
+# .fdo.b2c-image@fedora sets up /app/b2c in a before_script
+# we want to be able to overwrite this in other jobs,
+# so provide a stripped version of .pull.b2c@fedora
+.libinput_pull_b2c:
+  script: &pull_b2c
+    - curl -L -o /app/b2c $FDO_B2C
+    - chmod +x /app/b2c
+
+# Run meson and meson test in the container image through qemu
+.build-in-b2c@template:
+  extends:
+    - .policy
+    - .fdo.b2c-image@fedora
+    - .default_artifacts
+  tags:
+    - kvm
+  variables:
+    MESON_BUILDDIR: build_dir
+    FDO_B2C_KERNEL: https://gitlab.freedesktop.org/api/v4/projects/1831/packages/generic/kernel-x86_64/v5.13/bzImage
+    FDO_B2C_COMMAND: .gitlab-ci/meson-build.sh
+  script:
+    - *pull_b2c
+    - /app/b2c
+
+
 #
 # Fedora
 #
@@ -463,7 +474,7 @@ freebsd:13.0@container-clean:
 # Set one or the other, not both.
 .test-suite-vm:
   extends:
-    - .build-in-qemu@template
+    - .build-in-b2c@template
   stage: test-suite
   variables:
     # remove the global --no-suite=hardware
@@ -482,9 +493,9 @@ freebsd:13.0@container-clean:
     - .test-suite-vm
   variables:
     FDO_DISTRIBUTION_VERSION: 34
-    FDO_DISTRIBUTION_TAG: $FEDORA_QEMU_TAG
+    FDO_DISTRIBUTION_TAG: $FEDORA_TAG
   needs:
-    - "fedora:34@qemu-prep"
+    - "fedora:34@container-prep"
 
 
 vm-touchpad:
