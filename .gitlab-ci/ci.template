@@ -174,6 +174,8 @@ check-commit:
 {% if distro.qemu_based %}
   tags:
     - kvm
+  # temporary override
+  image: registry.freedesktop.org/bentiss/ci-templates/qemu-build-base:2021-07-29.1
 {% endif %}
   stage: prep
   variables:
@@ -181,6 +183,10 @@ check-commit:
     FDO_DISTRIBUTION_VERSION: '{{version}}'
     FDO_DISTRIBUTION_PACKAGES: ${{distro.name.upper()}}_PACKAGES
     FDO_DISTRIBUTION_TAG: ${{distro.name.upper()}}_TAG
+{% if distro.qemu_based %}
+    # temporary override
+    FDO_CI_TEMPLATES_QEMU_BASE_IMAGE: registry.freedesktop.org/bentiss/ci-templates/qemu-base:2021-07-29.1
+{% endif %}
 
 {% endfor %}
 {% endfor %}
@@ -261,6 +267,8 @@ check-commit:
     - .policy
     - .fdo.b2c-image@fedora
     - .default_artifacts
+  # temporary override
+  image: registry.freedesktop.org/bentiss/ci-templates/qemu-build-base:2021-07-29.1
   tags:
     - kvm
   variables:
@@ -268,6 +276,8 @@ check-commit:
     MESON_START_UDEVD: 1
     FDO_B2C_KERNEL: {{ b2c.kernel }}
     FDO_B2C_COMMAND: .gitlab-ci/meson-build.sh
+    # temporary override
+    FDO_B2C: https://gitlab.freedesktop.org/api/v4/projects/5764/packages/generic/b2c/sha256-70534f519d3cbbaa21fb903a66866736d8cd6658457094c66fdf328e89f7d4fd/b2c
   script:
     - *pull_b2c
     - /app/b2c
