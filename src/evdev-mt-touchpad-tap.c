@@ -35,6 +35,11 @@
 #define DEFAULT_DRAGLOCK_TIMEOUT_PERIOD ms2us(300)
 #define DEFAULT_TAP_MOVE_THRESHOLD 1.3 /* mm */
 
+/* The interval between three fingers touching and button press when fingers remain stationary */
+#define DEFAULT_DRAG3_INITIAL_DELAY ms2us(350)
+/* The time window during which you can continue a 3 finger drag by reapplying three fingers. ~700-800 ms is ideal. */
+#define DEFAULT_DRAG3_WAIT_FOR_RESUME_WINDOW ms2us(720)
+
 enum tap_event {
 	TAP_EVENT_TOUCH = 12,
 	TAP_EVENT_MOTION,
@@ -87,6 +92,10 @@ tap_state_to_str(enum tp_tap_state state)
 	CASE_RETURN_STRING(TAP_STATE_1FGTAP_DRAGGING_2);
 	CASE_RETURN_STRING(TAP_STATE_2FGTAP_DRAGGING_2);
 	CASE_RETURN_STRING(TAP_STATE_3FGTAP_DRAGGING_2);
+	
+	CASE_RETURN_STRING(TAP_STATE_DRAGGING_3);
+	CASE_RETURN_STRING(TAP_STATE_DRAGGING_3_WAIT);
+	
 	CASE_RETURN_STRING(TAP_STATE_DEAD);
 	}
 	return NULL;
@@ -164,6 +173,19 @@ tp_tap_set_drag_timer(struct tp_dispatch *tp, uint64_t time,
 			   (nfingers_tapped *
 			    DEFAULT_DRAG_TIMEOUT_PERIOD_PERFINGER));
 }
+
+static void
+tp_tap_set_3f_drag_initial_delay_timer(struct tp_dispatch *tp, uint64_t time)
+{
+	libinput_timer_set(&tp->tap.timer, time + DEFAULT_DRAG3_INITIAL_DELAY);
+}
+
+static void
+tp_tap_set_3f_drag_wait_timer(struct tp_dispatch *tp, uint64_t time)
+{
+	libinput_timer_set(&tp->tap.timer, time + DEFAULT_DRAG3_WAIT_FOR_RESUME_WINDOW);
+}
+
 
 static void
 tp_tap_set_draglock_timer(struct tp_dispatch *tp, uint64_t time)
@@ -510,12 +532,26 @@ tp_tap_touch3_handle_event(struct tp_dispatch *tp,
 		tp_tap_clear_timer(tp);
 		break;
 	case TAP_EVENT_MOTION:
-		tp_tap_move_to_dead(tp, t);
+		if (tp->tap.three_finger_dragging_enabled) {
+			/* motion always triggers dragging immediately -- otherwise you'll miss your target */
+			tp->tap.state = TAP_STATE_DRAGGING_3;
+			tp_tap_notify(tp, time, 1, LIBINPUT_BUTTON_STATE_PRESSED);
+			tp_tap_clear_timer(tp);
+		} else {
+			tp_tap_move_to_dead(tp, t);
+		}
 		break;
 	case TAP_EVENT_TIMEOUT:
-		tp->tap.state = TAP_STATE_TOUCH_3_HOLD;
-		tp_tap_clear_timer(tp);
-		tp_gesture_tap_timeout(tp, time);
+		if (tp->tap.three_finger_dragging_enabled) {
+			/* Important: Please note that we are about to enter the DRAGGING_3 state without having pressed any button. */
+			/* As long as the three fingers are stationary, the actual button press will only happen after a delay. This prevents accidental button presses that are otherwise very easy to make, e.g. by intending a 4 finger gesture but first engaging 3 fingers. Unless a button press can be cancelled instead of RELEASEd... */
+			tp_tap_set_3f_drag_initial_delay_timer(tp, time);
+			tp->tap.state = TAP_STATE_DRAGGING_3;
+		} else {
+			tp->tap.state = TAP_STATE_TOUCH_3_HOLD;
+			tp_tap_clear_timer(tp);
+			tp_gesture_tap_timeout(tp, time);
+		}
 		break;
 	case TAP_EVENT_RELEASE:
 		tp->tap.state = TAP_STATE_TOUCH_3_RELEASE;
@@ -1015,6 +1051,187 @@ tp_tap_dragging2_handle_event(struct tp_dispatch *tp,
 	}
 }
 
+
+
+
+
+
+
+
+
+
+
+
+
+// new states:
+
+//-comments = questions
+/*-comments = explanations, intents, ToDos... */
+
+/* TODO: disable 3 finger gestures */
+
+/* The two following functions are only used to determine whether the last finger left should "break out of" waiting for two additional fingers in order to resume 3 finger dragging. 
+
+Alternative method suggestions welcome -- preferrably one that (TODO:) freezes the cursor in place until the breakout happens, which will have the positive effect of not changing the user's selection rectangle, drag-n-drop drop location, window placement etc. since the intent clearly is to end the drag at the present location and subsequently control the cursor normally. */
+
+// expose this one instead of copying it?
+/* ...if not, TODO: rename */
+/* borrowed from evdev-mt-touchpad.c */
+static inline struct tp_history_point*
+tp_motion_history_offset(struct tp_touch *t, int offset)
+{
+	int offset_index =
+		(t->history.index - offset + TOUCHPAD_HISTORY_LENGTH) %
+		TOUCHPAD_HISTORY_LENGTH;
+
+	return &t->history.samples[offset_index];
+}
+
+/* borrowed + adapted from evdev-mt-touchpad.c */
+static inline double
+tp_tap_motion_speed(struct tp_dispatch *tp,
+			  struct tp_touch *t,
+			  uint64_t time)
+{
+	const struct tp_history_point *last;
+	struct device_coords delta;
+	struct phys_coords mm;
+	double distance;
+	double speed;
+
+	if (t->history.count < 2)
+		return 0;
+
+	last = tp_motion_history_offset(t, 1);
+	delta.x = abs(t->point.x - last->point.x);
+	delta.y = abs(t->point.y - last->point.y);
+	mm = evdev_device_unit_delta_to_mm(tp->device, &delta);
+
+	distance = length_in_mm(mm);
+	speed = distance/(time - last->time); /* mm/us */
+	speed *= 1000000; /* mm/s */
+	
+	return speed;
+}
+
+/* TODO: Bug: on some test occasions the escape key didn't seem to abort the drag in Gedit, Gnome Files (Nautilus?), etc. Instead it finished the drag. Seemed to happen after aborting the WAIT state with e.g. a two finger scroll gesture. */
+/* Important: we don't always have the primary button pressed in this state; the press is delayed if the fingers have remained stationary */
+static void
+tp_tap_dragging3_handle_event(struct tp_dispatch *tp,
+			      struct tp_touch *t,
+			      enum tap_event event, uint64_t time)
+{
+	bool primary_button_pressed;
+	/* TODO: are button masks defined somewhere? */
+	primary_button_pressed = tp->tap.buttons_pressed & (1 << 1); // 1 << 1, 0b10, 2...?
+	
+	switch (event) {
+	case TAP_EVENT_PALM:
+	case TAP_EVENT_PALM_UP:
+		break;
+	case TAP_EVENT_RELEASE:
+		/* removing all, or all but one, fingers gives you ~0.7 seconds to place three fingers back on the touchpad before the drag ends */
+        if (tp->nfingers_down == 0) {
+			/* ...but only if the button press has actually happened; the primary button might not be pressed yet if the fingers remained stationary */
+			if (primary_button_pressed) {
+				tp->tap.state = TAP_STATE_DRAGGING_3_WAIT;
+				tp_tap_set_3f_drag_wait_timer(tp, time);
+			} else {
+                tp->tap.state = TAP_STATE_IDLE;
+				tp_tap_clear_timer(tp);
+			}
+		}
+		break;
+	case TAP_EVENT_TOUCH:
+		/* don't just abort someone's in-progress drag-n-drop on a whim -- design for error */
+		break;
+	case TAP_EVENT_MOTION:
+		/* perform a press only if it hasn't already been done by the timer */
+		if (!primary_button_pressed) {
+			tp_tap_notify(tp, time, 1, LIBINPUT_BUTTON_STATE_PRESSED);
+			tp_tap_clear_timer(tp);
+		}
+		break;
+	case TAP_EVENT_TIMEOUT:
+		/* we've not moved our three fingers so we press after the delay has timed out instead */
+		tp_tap_notify(tp, time, 1, LIBINPUT_BUTTON_STATE_PRESSED);
+		tp_tap_clear_timer(tp);
+		break;
+	case TAP_EVENT_BUTTON:
+		// not sure about the semantics of this event -- does it simply signal that a bit has been flipped in tp->tap.buttons_pressed?
+		
+		/* the primary button might not be pressed yet if the fingers remained stationary */
+		// ...but only if this event concerns another button, if my assumption is right?
+		if (primary_button_pressed) {
+			tp_tap_notify(tp, time, 1, LIBINPUT_BUTTON_STATE_RELEASED);
+		}
+		tp->tap.state = TAP_STATE_DEAD;
+		break;
+	case TAP_EVENT_THUMB:
+		break;
+		/* Would've also been useful to actually button_state_cancel a button_state_pressed instead of necessarily releasing it. Especially if the state is "logical". E.g. if a gesture happens after the logical button is pressed and the release isn't applicable anymore. */
+	}
+}
+
+/* After leaving 3 finger dragging there's a small time window where you can resume the drag with 3 fingers. */
+static void
+tp_tap_dragging3_wait_handle_event(struct tp_dispatch *tp,
+				  struct tp_touch *t,
+				  enum tap_event event, uint64_t time)
+{
+	switch (event) {
+	case TAP_EVENT_TOUCH:
+        tp->tap.state = TAP_STATE_DRAGGING_3;
+        tp_tap_clear_timer(tp);
+		break;
+	case TAP_EVENT_RELEASE:
+		break;
+	case TAP_EVENT_MOTION:
+		/* We enter this state with zero or one finger. The last remaining finger is too susceptible to small motions not to filter them out somehow, in order to not lose the drag too easily. */
+		/* TODO: Better method needed that prevents all cursor movement until speed or distance threshold is reached. */
+		if (tp_tap_motion_speed(tp, t, time) > 5 /* mm/s */) {
+			tp->tap.state = TAP_STATE_DEAD;
+			tp_tap_clear_timer(tp);
+			tp_tap_notify(tp, time, 1, LIBINPUT_BUTTON_STATE_RELEASED);
+		}
+		/* Should we abort on significant movement of two fingers as well to give way for scrolling? Probably, but seems to work already. TODO: Test -- interplay with two finger scrolling is largely untested. 
+		
+		Seemed at one time to give rise to a bug where the escape key no longer cancels the drag in Gedit, Gnome Files (only for the touchpad device -- not for a mouse). Can't recreate reliably. */
+		
+		/* TODO: Bug: this event is only delivered from the touchpad device in question. Another device will experience drag-lock for the full 0.7 second timeout. How does one FSM subscribe to events from another? */
+		break;
+	case TAP_EVENT_BUTTON: /* fallthrough */
+	case TAP_EVENT_TIMEOUT: 
+		/* the drag was not resumed */
+		tp->tap.state = tp->nfingers_down == 0 ? TAP_STATE_IDLE : TAP_STATE_DEAD;
+		tp_tap_clear_timer(tp);
+		tp_tap_notify(tp, time, 1, LIBINPUT_BUTTON_STATE_RELEASED);
+		break;
+	case TAP_EVENT_THUMB:
+	case TAP_EVENT_PALM:
+	case TAP_EVENT_PALM_UP:
+		break;
+	}
+}
+
+// new states end
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 static void
 tp_tap_dead_handle_event(struct tp_dispatch *tp,
 			 struct tp_touch *t,
@@ -1028,6 +1245,17 @@ tp_tap_dead_handle_event(struct tp_dispatch *tp,
 			tp->tap.state = TAP_STATE_IDLE;
 		break;
 	case TAP_EVENT_TOUCH:
+		/* Three finger dragging is always available, without having to lift all fingers in between*/
+		if (tp->tap.three_finger_dragging_enabled && tp->tap.nfingers_down == 3) {
+			tp_tap_set_3f_drag_initial_delay_timer(tp, time);
+			tp->tap.state = TAP_STATE_DRAGGING_3;
+			
+			/* TODO: Small bug: We almost always seem to press the button immediately upon placing the third finger on the touchpad after this, no matter how carefully. It's almost impossible to get this timer to fire, unlike when it's set in TOUCH_3. */
+			
+			// Is this because TOUCH_3 gets its MOTIONs filtered but DRAGGING_3 doesn't? Don't exactly understand that filtering mechanism.
+			// How fine-grained are MOTION events really?
+		}
+		break;
 	case TAP_EVENT_MOTION:
 	case TAP_EVENT_TIMEOUT:
 	case TAP_EVENT_BUTTON:
@@ -1140,6 +1368,16 @@ tp_tap_handle_event(struct tp_dispatch *tp,
 	case TAP_STATE_3FGTAP_DRAGGING_2:
 		tp_tap_dragging2_handle_event(tp, t, event, time, 3);
 		break;
+		
+		
+	case TAP_STATE_DRAGGING_3:
+		tp_tap_dragging3_handle_event(tp, t, event, time);
+		break;
+	case TAP_STATE_DRAGGING_3_WAIT:
+		tp_tap_dragging3_wait_handle_event(tp, t, event, time);
+		break;
+		
+		
 	case TAP_STATE_DEAD:
 		tp_tap_dead_handle_event(tp, t, event, time);
 		break;
@@ -1313,9 +1551,12 @@ tp_tap_handle_state(struct tp_dispatch *tp, uint64_t time)
 	case TAP_STATE_3FGTAP_DRAGGING_OR_TAP:
 	case TAP_STATE_TOUCH_2:
 	case TAP_STATE_TOUCH_3:
+	
+	case TAP_STATE_DRAGGING_3_WAIT:
 		filter_motion = 1;
 		break;
 
+	case TAP_STATE_DRAGGING_3:
 	default:
 		break;
 
@@ -1579,6 +1820,7 @@ tp_init_tap(struct tp_dispatch *tp)
 	tp->tap.want_map = tp->tap.map;
 	tp->tap.drag_enabled = tp_drag_default(tp->device);
 	tp->tap.drag_lock_enabled = tp_drag_lock_default(tp->device);
+	tp->tap.three_finger_dragging_enabled = 1;
 
 	snprintf(timer_name,
 		 sizeof(timer_name),
@@ -1651,6 +1893,9 @@ tp_tap_dragging(const struct tp_dispatch *tp)
 	case TAP_STATE_1FGTAP_DRAGGING_OR_TAP:
 	case TAP_STATE_2FGTAP_DRAGGING_OR_TAP:
 	case TAP_STATE_3FGTAP_DRAGGING_OR_TAP:
+	
+	case TAP_STATE_DRAGGING_3:
+	case TAP_STATE_DRAGGING_3_WAIT:
 		return true;
 	default:
 		return false;
