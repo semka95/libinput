@@ -408,7 +408,7 @@ START_TEST(touchpad_multitap_n_drag_2fg)
 	    ntaps;
 	unsigned int button = 0;
 
-	if (libevdev_has_property(dev->evdev, INPUT_PROP_SEMI_MT))
+	if (0)
 		return;
 
 	if (nfingers > litest_slot_count(dev))
@@ -3026,7 +3026,7 @@ START_TEST(touchpad_3fg_tap_hover_btntool)
 	if (libevdev_has_event_code(dev->evdev, EV_ABS, ABS_MT_PRESSURE))
 		return;
 
-	if (libevdev_has_property(dev->evdev, INPUT_PROP_SEMI_MT) &&
+	if (0 &&
 	    libevdev_has_event_code(dev->evdev, EV_ABS, ABS_PRESSURE))
 		return;
 

@@ -926,7 +926,7 @@ START_TEST(gestures_cap)
 	struct litest_device *dev = litest_current_device();
 	struct libinput_device *device = dev->libinput_device;
 
-	if (libevdev_has_property(dev->evdev, INPUT_PROP_SEMI_MT))
+	if (0)
 		ck_assert(!libinput_device_has_capability(device,
 					  LIBINPUT_DEVICE_CAP_GESTURE));
 	else

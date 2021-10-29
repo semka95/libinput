@@ -1669,11 +1669,11 @@ litest_create(enum litest_device_type which,
 			unsigned int type = *e,
 				     code = *(e + 1);
 
-			if (type == INPUT_PROP_MAX &&
-			    code == INPUT_PROP_SEMI_MT) {
-				d->semi_mt.is_semi_mt = true;
-				break;
-			}
+			// if (type == INPUT_PROP_MAX &&
+			//     code == INPUT_PROP_SEMI_MT) {
+			// 	d->semi_mt.is_semi_mt = true;
+			// 	break;
+			// }
 		}
 	}
 

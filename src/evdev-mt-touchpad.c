@@ -2895,7 +2895,7 @@ tp_init_slots(struct tp_dispatch *tp,
 		tp->has_mt = false;
 	}
 
-	tp->semi_mt = libevdev_has_property(device->evdev, INPUT_PROP_SEMI_MT);
+	tp->semi_mt = 0;
 
 	/* Semi-mt devices are not reliable for true multitouch data, so we
 	 * simply pretend they're single touch touchpads with BTN_TOOL bits.
